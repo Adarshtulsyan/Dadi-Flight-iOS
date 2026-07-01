@@ -507,7 +507,7 @@ struct ContentView: View {
                                 }
                             }) {
                                 VStack(spacing: 8) {
-                                    Image(systemName: "airplane.takeoff")
+                                    Image(systemName: "airplane.departure")
                                         .font(.system(size: 34))
                                     Text("Commence")
                                         .font(.system(size: 13, weight: .bold))
@@ -523,7 +523,7 @@ struct ContentView: View {
                                 withAnimation { vm.stopPlayback() }
                             }) {
                                 VStack(spacing: 8) {
-                                    Image(systemName: "airplane.landing")
+                                    Image(systemName: "airplane.arrival")
                                         .font(.system(size: 34))
                                     Text("End Session")
                                         .font(.system(size: 13, weight: .bold))
