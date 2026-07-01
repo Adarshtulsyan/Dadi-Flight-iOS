@@ -1,0 +1,15 @@
+# Xcode
+#
+build/
+DerivedData/
+*.hmap
+*.ipa
+*.playground.micromdanywhere
+#
+# Bundle config
+*.xcuserstate
+project.xcworkspace/
+xcuserdata/
+
+# macOS
+.DS_Store
