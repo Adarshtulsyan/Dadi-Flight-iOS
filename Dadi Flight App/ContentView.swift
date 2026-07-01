@@ -4,11 +4,6 @@ import Combine
 import Network
 
 // MARK: - Models
-struct GitHubContent: Codable {
-    let sha: String
-    let content: String
-}
-
 struct AppConfig: Codable {
     let startTime: String
 }
@@ -54,13 +49,17 @@ class FlightViewModel: ObservableObject {
     private var audioPlayer: AVPlayer?
     private var timer: AnyCancellable?
     private var configTimer: AnyCancellable?
+
+    @Published var serverClockOffset: TimeInterval = 0
     private var currentStartTime: Date {
         didSet {
             updateStartTimeStr()
         }
     }
-    private var currentFileSha: String = ""
-    private let apiUrl = "https://api.github.com/repos/Adarshtulsyan/Inflight-audio-app/contents/config.json"
+
+    private var lastFetchedTimeStr: String = ""
+    private let apiUrl = "https://raw.githubusercontent.com/Adarshtulsyan/Inflight-audio-app/main/config.json"
+    private let kolkataTimeZone = TimeZone(identifier: "Asia/Kolkata")!
 
     init() {
         // Default start time: 2026-04-22 12:19:00 IST
@@ -71,7 +70,7 @@ class FlightViewModel: ObservableObject {
         components.hour = 12
         components.minute = 19
         components.second = 0
-        components.timeZone = TimeZone(identifier: "Asia/Kolkata")
+        components.timeZone = kolkataTimeZone
         let defaultDate = Calendar.current.date(from: components) ?? Date()
         self.currentStartTime = defaultDate
 
@@ -86,19 +85,26 @@ class FlightViewModel: ObservableObject {
         updateStartTimeStr()
     }
 
+    private func getSyncedDate() -> Date {
+        return Date().addingTimeInterval(serverClockOffset)
+    }
+
     private func startSystemTimeUpdates() {
         systemTimer = Timer.publish(every: 1, on: .main, in: .common)
             .autoconnect()
-            .sink { [weak self] now in
+            .sink { [weak self] _ in
+                guard let self = self else { return }
+                let now = self.getSyncedDate()
                 let formatter = DateFormatter()
                 formatter.dateFormat = "HH:mm:ss"
-                self?.systemTimeStr = formatter.string(from: now)
+                self.systemTimeStr = formatter.string(from: now)
             }
     }
 
     private func updateStartTimeStr() {
         let formatter = DateFormatter()
         formatter.dateFormat = "MMM d, HH:mm:ss"
+        formatter.timeZone = kolkataTimeZone
         DispatchQueue.main.async {
             self.startTimeStr = formatter.string(from: self.currentStartTime)
         }
@@ -142,44 +148,60 @@ class FlightViewModel: ObservableObject {
     }
 
     func fetchRemoteConfig() {
-        guard let url = URL(string: apiUrl) else { return }
+        guard let url = URL(string: "\(apiUrl)?t=\(Date().timeIntervalSince1970)") else { return }
 
-        URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
-            guard let data = data, error == nil else {
+        var request = URLRequest(url: url)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self, let data = data, error == nil else {
                 DispatchQueue.main.async { self?.isLive = false }
                 return
             }
 
+            // Sync clock using Date header
+            if let httpResponse = response as? HTTPURLResponse,
+               let dateStr = httpResponse.allHeaderFields["Date"] as? String {
+                let headerFormatter = DateFormatter()
+                headerFormatter.locale = Locale(identifier: "en_US_POSIX")
+                headerFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+                if let serverDate = headerFormatter.date(from: dateStr) {
+                    let offset = serverDate.timeIntervalSinceNow
+                    DispatchQueue.main.async {
+                        self.serverClockOffset = offset
+                        print("Clock synced. Offset: \(offset)s")
+                    }
+                }
+            }
+
             do {
-                let github = try JSONDecoder().decode(GitHubContent.self, from: data)
-                let cleanedContent = github.content.replacingOccurrences(of: "\n", with: "")
+                let config = try JSONDecoder().decode(AppConfig.self, from: data)
+                let formatter = DateFormatter()
+                formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+                formatter.timeZone = self.kolkataTimeZone
 
-                if let decodedData = Data(base64Encoded: cleanedContent) {
-                    let config = try JSONDecoder().decode(AppConfig.self, from: decodedData)
+                if let newDate = formatter.date(from: config.startTime) {
+                    DispatchQueue.main.async {
+                        self.isLive = true
+                        let drift = abs(self.currentStartTime.timeIntervalSince(newDate))
+                        let timeChanged = config.startTime != self.lastFetchedTimeStr
 
-                    let formatter = DateFormatter()
-                    formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
-                    formatter.timeZone = TimeZone(identifier: "Asia/Kolkata")
+                        if self.lastFetchedTimeStr.isEmpty || timeChanged || drift > 1 {
+                            print("Remote Sync Update: \(config.startTime) (Offset: \(self.serverClockOffset)s)")
+                            self.lastFetchedTimeStr = config.startTime
+                            self.currentStartTime = newDate
+                            UserDefaults.standard.set(newDate.timeIntervalSince1970, forKey: "start_time_interval")
 
-                    if let newDate = formatter.date(from: config.startTime) {
-                        DispatchQueue.main.async {
-                            self?.isLive = true
-                            let drift = abs(self?.currentStartTime.timeIntervalSince(newDate) ?? 0)
-
-                            if self?.currentFileSha.isEmpty == true || github.sha != self?.currentFileSha || drift > 2 {
-                                self?.currentFileSha = github.sha
-                                self?.currentStartTime = newDate
-                                UserDefaults.standard.set(newDate.timeIntervalSince1970, forKey: "start_time_interval")
-
-                                if self?.isPlaybackStartedByUser == true {
-                                    self?.schedulePlayback()
-                                }
+                            if self.isPlaybackStartedByUser {
+                                self.schedulePlayback()
                             }
                         }
                     }
                 }
             } catch {
-                DispatchQueue.main.async { self?.isLive = false }
+                print("JSON parse error: \(error)")
+                DispatchQueue.main.async { self.isLive = false }
             }
         }.resume()
     }
@@ -189,7 +211,7 @@ class FlightViewModel: ObservableObject {
         audioPlayer?.pause()
         audioPlayer?.seek(to: .zero)
 
-        let now = Date()
+        let now = getSyncedDate()
         let startDelay = currentStartTime.timeIntervalSince(now)
 
         // Use duration from player if available, otherwise fallback
@@ -207,16 +229,20 @@ class FlightViewModel: ObservableObject {
     }
 
     private func startCountdown(from seconds: TimeInterval) {
-        var remaining = seconds
+        timer?.cancel()
+
         timer = Timer.publish(every: 1, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
+                guard let self = self else { return }
+                let now = self.getSyncedDate()
+                let remaining = self.currentStartTime.timeIntervalSince(now)
+
                 if remaining > 0 {
-                    self?.statusText = "Starts in \(self?.formatCountdown(Int(remaining)) ?? "")"
-                    remaining -= 1
+                    self.statusText = "Starts in \(self.formatCountdown(Int(ceil(remaining))))"
                 } else {
-                    self?.statusText = "Starting shortly..."
-                    self?.startAudio(at: 0)
+                    self.statusText = "Starting shortly..."
+                    self.startAudio(at: abs(remaining))
                 }
             }
     }
@@ -241,6 +267,15 @@ class FlightViewModel: ObservableObject {
 
         let current = player.currentTime().seconds
         let total = item.duration.seconds
+
+        let now = getSyncedDate()
+        let expectedEnd = currentStartTime.addingTimeInterval(total)
+
+        // Absolute Time Completion Check
+        if now >= expectedEnd && total > 0 {
+            handleCompletion()
+            return
+        }
 
         guard total > 0 && !total.isNaN else { return }
 
