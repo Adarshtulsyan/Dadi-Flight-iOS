@@ -5,7 +5,7 @@ import Network
 import MediaPlayer
 
 // MARK: - Models
-struct AppConfig: Codable {
+struct AppConfig: Codable, Sendable {
     let startTime: String
 }
 
@@ -121,7 +121,7 @@ class FlightViewModel: ObservableObject {
         let session = AVAudioSession.sharedInstance()
         do {
             // Enable background audio and bluetooth support
-            try session.setCategory(.playback, mode: .default, options: [.allowBluetooth, .allowBluetoothA2DP])
+            try session.setCategory(.playback, mode: .default, options: [.allowBluetoothHFP, .allowBluetoothA2DP])
             try session.setActive(true)
 
             // Handle audio interruptions (calls, etc.)
@@ -247,14 +247,14 @@ class FlightViewModel: ObservableObject {
 
             guard let data = data else { return }
 
-            do {
-                let config = try JSONDecoder().decode(AppConfig.self, from: data)
-                let formatter = DateFormatter()
-                formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
-                formatter.timeZone = self.kolkataTimeZone
+            DispatchQueue.main.async {
+                do {
+                    let config = try JSONDecoder().decode(AppConfig.self, from: data)
+                    let formatter = DateFormatter()
+                    formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+                    formatter.timeZone = self.kolkataTimeZone
 
-                if let newDate = formatter.date(from: config.startTime) {
-                    DispatchQueue.main.async {
+                    if let newDate = formatter.date(from: config.startTime) {
                         self.isLive = true
                         self.isConfigLoaded = true
                         let drift = abs(self.currentStartTime.timeIntervalSince(newDate))
@@ -270,10 +270,10 @@ class FlightViewModel: ObservableObject {
                             }
                         }
                     }
+                } catch {
+                    print("JSON parse error: \(error)")
+                    self.isLive = false
                 }
-            } catch {
-                print("JSON parse error: \(error)")
-                DispatchQueue.main.async { self.isLive = false }
             }
         }.resume()
     }
