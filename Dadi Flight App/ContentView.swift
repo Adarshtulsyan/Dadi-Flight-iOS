@@ -76,6 +76,7 @@ class FlightViewModel: ObservableObject {
         if let storedTimeInterval = UserDefaults.standard.object(forKey: "start_time_interval") as? TimeInterval {
             self.currentStartTime = Date(timeIntervalSince1970: storedTimeInterval)
             self.isConfigLoaded = true
+            self.statusText = "Ready for Journey"
         } else {
             self.currentStartTime = Date.distantFuture
             self.isConfigLoaded = false
@@ -257,6 +258,11 @@ class FlightViewModel: ObservableObject {
                     if let newDate = formatter.date(from: config.startTime) {
                         self.isLive = true
                         self.isConfigLoaded = true
+
+                        if !self.isPlaybackStartedByUser && self.statusText == "Syncing journey details…" {
+                            self.statusText = "Ready for Journey"
+                        }
+
                         let drift = abs(self.currentStartTime.timeIntervalSince(newDate))
                         let timeChanged = config.startTime != self.lastFetchedTimeStr
 
