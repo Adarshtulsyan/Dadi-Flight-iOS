@@ -2,6 +2,7 @@ import SwiftUI
 import AVFoundation
 import Combine
 import Network
+import MediaPlayer
 
 // MARK: - Models
 struct AppConfig: Codable {
@@ -27,7 +28,7 @@ class NetworkMonitor: ObservableObject {
 // MARK: - View Model
 class FlightViewModel: ObservableObject {
     @Published var currentScreen: AppScreen = .welcome
-    @Published var statusText: String = "Detecting audio devices…"
+    @Published var statusText: String = "Syncing journey details…"
     @Published var isLive: Bool = false
     @Published var earphonesConfirmed: Bool = false
     @Published var isPlaybackStartedByUser: Bool = false
@@ -39,8 +40,17 @@ class FlightViewModel: ObservableObject {
     @Published var systemTimeStr: String = ""
     @Published var startTimeStr: String = ""
     @Published var finished: Bool = false
+    @Published var isConfigLoaded: Bool = false
+    @Published var volume: Float = 1.0 {
+        didSet {
+            audioPlayer?.volume = volume
+        }
+    }
+    @Published var sleepTimerRemaining: TimeInterval? = nil
+    private var sleepTimerCancellable: AnyCancellable?
 
     private var systemTimer: AnyCancellable?
+    private var cancellables = Set<AnyCancellable>()
 
     enum AppScreen {
         case welcome, main
@@ -59,27 +69,20 @@ class FlightViewModel: ObservableObject {
 
     private var lastFetchedTimeStr: String = ""
     private let apiUrl = "https://raw.githubusercontent.com/Adarshtulsyan/Inflight-audio-app/main/config.json"
-    private let kolkataTimeZone = TimeZone(identifier: "Asia/Kolkata")!
+    private let kolkataTimeZone = TimeZone(identifier: "Asia/Kolkata") ?? TimeZone(secondsFromGMT: 19800)! // Fallback to IST offset
 
     init() {
-        // Default start time: 2026-04-22 12:19:00 IST
-        var components = DateComponents()
-        components.year = 2026
-        components.month = 4
-        components.day = 22
-        components.hour = 12
-        components.minute = 19
-        components.second = 0
-        components.timeZone = kolkataTimeZone
-        let defaultDate = Calendar.current.date(from: components) ?? Date()
-        self.currentStartTime = defaultDate
-
-        // Load stored time if available
+        // Load stored time if available, otherwise default to a distant future to avoid "Completed" state
         if let storedTimeInterval = UserDefaults.standard.object(forKey: "start_time_interval") as? TimeInterval {
             self.currentStartTime = Date(timeIntervalSince1970: storedTimeInterval)
+            self.isConfigLoaded = true
+        } else {
+            self.currentStartTime = Date.distantFuture
+            self.isConfigLoaded = false
         }
 
         setupAudioSession()
+        setupRemoteCommandCenter()
         startConfigPolling()
         startSystemTimeUpdates()
         updateStartTimeStr()
@@ -102,6 +105,10 @@ class FlightViewModel: ObservableObject {
     }
 
     private func updateStartTimeStr() {
+        guard currentStartTime != .distantFuture else {
+            self.startTimeStr = "Waiting for Sync"
+            return
+        }
         let formatter = DateFormatter()
         formatter.dateFormat = "MMM d, HH:mm:ss"
         formatter.timeZone = kolkataTimeZone
@@ -111,18 +118,74 @@ class FlightViewModel: ObservableObject {
     }
 
     private func setupAudioSession() {
-        #if os(iOS) || os(tvOS) || os(watchOS)
+        let session = AVAudioSession.sharedInstance()
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
-            try AVAudioSession.sharedInstance().setActive(true)
+            // Enable background audio and bluetooth support
+            try session.setCategory(.playback, mode: .default, options: [.allowBluetooth, .allowBluetoothA2DP])
+            try session.setActive(true)
+
+            // Handle audio interruptions (calls, etc.)
+            NotificationCenter.default.addObserver(self, selector: #selector(handleInterruption), name: AVAudioSession.interruptionNotification, object: session)
         } catch {
-            print("Failed to set audio session category.")
+            print("Failed to set audio session category: \(error)")
         }
-        #endif
+    }
+
+    @objc private func handleInterruption(notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
+
+        if type == .began {
+            // Interruption began (e.g., incoming call), pause audio
+            audioPlayer?.pause()
+        } else if type == .ended {
+            if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
+                let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+                if options.contains(.shouldResume) && isPlaybackStartedByUser {
+                    audioPlayer?.play()
+                }
+            }
+        }
+    }
+
+    private func setupRemoteCommandCenter() {
+        let commandCenter = MPRemoteCommandCenter.shared()
+
+        commandCenter.playCommand.isEnabled = true
+        commandCenter.playCommand.addTarget { [weak self] _ in
+            self?.audioPlayer?.play()
+            return .success
+        }
+
+        commandCenter.pauseCommand.isEnabled = true
+        commandCenter.pauseCommand.addTarget { [weak self] _ in
+            self?.audioPlayer?.pause()
+            return .success
+        }
+    }
+
+    private func updateNowPlayingInfo() {
+        var nowPlayingInfo = [String: Any]()
+        nowPlayingInfo[MPMediaItemPropertyTitle] = "Rani Sati Dadi Mangal Path"
+        nowPlayingInfo[MPMediaItemPropertyArtist] = "Marwari Samaj"
+
+        if let player = audioPlayer, let item = player.currentItem {
+            nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = player.currentTime().seconds
+            nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = item.duration.seconds
+            nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = player.rate
+        }
+
+        if let image = UIImage(named: "dadi") {
+            nowPlayingInfo[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+        }
+
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
     }
 
     func setPlayer(_ player: AVPlayer) {
         self.audioPlayer = player
+        player.volume = self.volume
 
         // Observe duration
         player.currentItem?.publisher(for: \.duration)
@@ -130,13 +193,12 @@ class FlightViewModel: ObservableObject {
                 if duration.isValid && !duration.isIndefinite {
                     DispatchQueue.main.async {
                         self?.duration = duration.seconds
+                        self?.updateNowPlayingInfo()
                     }
                 }
             }
             .store(in: &cancellables)
     }
-
-    private var cancellables = Set<AnyCancellable>()
 
     func startConfigPolling() {
         fetchRemoteConfig()
@@ -152,11 +214,20 @@ class FlightViewModel: ObservableObject {
 
         var request = URLRequest(url: url)
         request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = 10
         request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
 
         URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
-            guard let self = self, let data = data, error == nil else {
-                DispatchQueue.main.async { self?.isLive = false }
+            guard let self = self else { return }
+
+            if let error = error {
+                print("Network error: \(error.localizedDescription)")
+                DispatchQueue.main.async {
+                    self.isLive = false
+                    if !self.isConfigLoaded {
+                        self.statusText = "Sync required (Check Internet)"
+                    }
+                }
                 return
             }
 
@@ -170,10 +241,11 @@ class FlightViewModel: ObservableObject {
                     let offset = serverDate.timeIntervalSinceNow
                     DispatchQueue.main.async {
                         self.serverClockOffset = offset
-                        print("Clock synced. Offset: \(offset)s")
                     }
                 }
             }
+
+            guard let data = data else { return }
 
             do {
                 let config = try JSONDecoder().decode(AppConfig.self, from: data)
@@ -184,11 +256,11 @@ class FlightViewModel: ObservableObject {
                 if let newDate = formatter.date(from: config.startTime) {
                     DispatchQueue.main.async {
                         self.isLive = true
+                        self.isConfigLoaded = true
                         let drift = abs(self.currentStartTime.timeIntervalSince(newDate))
                         let timeChanged = config.startTime != self.lastFetchedTimeStr
 
                         if self.lastFetchedTimeStr.isEmpty || timeChanged || drift > 1 {
-                            print("Remote Sync Update: \(config.startTime) (Offset: \(self.serverClockOffset)s)")
                             self.lastFetchedTimeStr = config.startTime
                             self.currentStartTime = newDate
                             UserDefaults.standard.set(newDate.timeIntervalSince1970, forKey: "start_time_interval")
@@ -207,6 +279,11 @@ class FlightViewModel: ObservableObject {
     }
 
     func schedulePlayback() {
+        guard isConfigLoaded else {
+            statusText = "Waiting for Sync..."
+            return
+        }
+
         timer?.cancel()
         audioPlayer?.pause()
         audioPlayer?.seek(to: .zero)
@@ -254,11 +331,13 @@ class FlightViewModel: ObservableObject {
         let seekTime = CMTime(seconds: seconds, preferredTimescale: 600)
         audioPlayer?.seek(to: seekTime)
         audioPlayer?.play()
+        updateNowPlayingInfo()
 
         timer = Timer.publish(every: 0.5, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
                 self?.updateProgress()
+                self?.updateNowPlayingInfo()
             }
     }
 
@@ -298,14 +377,47 @@ class FlightViewModel: ObservableObject {
         audioPlayer?.pause()
         audioPlayer?.seek(to: .zero)
         statusText = "Journey Paused"
+        updateNowPlayingInfo()
     }
 
     func handleCompletion() {
         isPlaybackStartedByUser = false
         timer?.cancel()
+        sleepTimerCancellable?.cancel()
+        sleepTimerRemaining = nil
         finished = true
         statusText = "Journey Completed"
         audioPlayer?.pause()
+        updateNowPlayingInfo()
+    }
+
+    func setSleepTimer(minutes: Int?) {
+        sleepTimerCancellable?.cancel()
+        guard let minutes = minutes else {
+            sleepTimerRemaining = nil
+            return
+        }
+
+        sleepTimerRemaining = TimeInterval(minutes * 60)
+        sleepTimerCancellable = Timer.publish(every: 1, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                guard let self = self, let remaining = self.sleepTimerRemaining else { return }
+                if remaining > 1 {
+                    self.sleepTimerRemaining = remaining - 1
+                } else {
+                    self.stopPlayback()
+                    self.sleepTimerRemaining = nil
+                    self.sleepTimerCancellable?.cancel()
+                }
+            }
+    }
+
+    func formatSleepTimer() -> String {
+        guard let remaining = sleepTimerRemaining else { return "" }
+        let mins = Int(remaining) / 60
+        let secs = Int(remaining) % 60
+        return String(format: "%d:%02d", mins, secs)
     }
 
     private func formatCountdown(_ totalSecs: Int) -> String {
@@ -334,7 +446,6 @@ struct ContentView: View {
     @StateObject private var vm = FlightViewModel()
     @StateObject private var network = NetworkMonitor()
 
-    // Replace "audio" with your actual audio filename (e.g., audio.mp3)
     @State private var player = AVPlayer(url: Bundle.main.url(forResource: "audio", withExtension: "mp3") ?? URL(fileURLWithPath: ""))
 
     var body: some View {
@@ -366,11 +477,11 @@ struct ContentView: View {
 
     // MARK: - Welcome Screen
     var welcomeView: some View {
-        VStack(spacing: 34) { // Fibonacci 34
+        VStack(spacing: 34) {
             Image("dadi")
                 .resizable()
                 .scaledToFit()
-                .frame(width: 144, height: 144) // Fibonacci 144
+                .frame(width: 144, height: 144)
                 .clipShape(Circle())
                 .overlay(Circle().stroke(Color(hex: "D4AF37"), lineWidth: 2))
                 .shadow(color: Color(hex: "D4AF37").opacity(0.3), radius: 13)
@@ -378,7 +489,7 @@ struct ContentView: View {
 
             Text("Jai Dadi Ki")
                 .font(.system(size: 34, weight: .bold))
-                .foregroundColor(Color(hex: "D4AF37")) // Gold
+                .foregroundColor(Color(hex: "D4AF37"))
 
             Text("We are honored to have you on board for this unique spiritual experience. Join us as we commence the Rani Sati Dadi Mangal Path, beautifully orchestrated for our journey through the skies.")
                 .font(.system(size: 16))
@@ -421,7 +532,6 @@ struct ContentView: View {
                         .font(.system(size: 13))
                         .foregroundColor(.secondary)
 
-                    // Diagnostic Times for Testing
                     HStack(spacing: 13) {
                         Text("Device: \(vm.systemTimeStr)")
                         Text("Target: \(vm.startTimeStr)")
@@ -435,11 +545,11 @@ struct ContentView: View {
                 VStack(alignment: .trailing, spacing: 5) {
                     HStack(spacing: 8) {
                         Circle()
-                            .fill(network.isConnected ? Color(hex: "D4AF37") : .gray)
+                            .fill(network.isConnected ? Color(hex: "D4AF37") : .red)
                             .frame(width: 8, height: 8)
-                        Text(network.isConnected ? "LIVE" : "OFFLINE")
+                        Text(network.isConnected ? (vm.isLive ? "LIVE" : "SYNCING") : "OFFLINE")
                             .font(.system(size: 10, weight: .black))
-                            .foregroundColor(network.isConnected ? Color(hex: "D4AF37") : .gray)
+                            .foregroundColor(network.isConnected ? Color(hex: "D4AF37") : .red)
                     }
                     .padding(.horizontal, 13)
                     .padding(.vertical, 8)
@@ -456,18 +566,17 @@ struct ContentView: View {
             Spacer()
 
             // Central Image / Audio Area
-            VStack(spacing: 34) {
+            VStack(spacing: 21) {
                 ZStack {
-                    // Glow Effect
                     Circle()
                         .fill(Color(hex: "D4AF37").opacity(0.12))
-                        .frame(width: 233, height: 233) // Fibonacci 233
+                        .frame(width: 233, height: 233)
                         .blur(radius: 55)
 
                     Image("dadi")
                         .resizable()
                         .scaledToFit()
-                        .frame(width: 144, height: 144) // Fibonacci 144 (Golden Ratio balanced)
+                        .frame(width: 144, height: 144)
                         .clipShape(RoundedRectangle(cornerRadius: 34))
                         .overlay(
                             RoundedRectangle(cornerRadius: 34)
@@ -492,6 +601,44 @@ struct ContentView: View {
                             .transition(.opacity)
                     }
                 }
+
+                // Volume and Sleep Timer Controls
+                if vm.isPlaybackStartedByUser && !vm.finished {
+                    VStack(spacing: 15) {
+                        // Volume Slider
+                        HStack(spacing: 15) {
+                            Image(systemName: "speaker.fill")
+                                .foregroundColor(.secondary)
+                            Slider(value: $vm.volume, in: 0...1)
+                                .accentColor(Color(hex: "D4AF37"))
+                            Image(systemName: "speaker.wave.3.fill")
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal, 40)
+
+                        // Sleep Timer
+                        HStack {
+                            Menu {
+                                Button("Off") { vm.setSleepTimer(minutes: nil) }
+                                Button("15 Minutes") { vm.setSleepTimer(minutes: 15) }
+                                Button("30 Minutes") { vm.setSleepTimer(minutes: 30) }
+                                Button("60 Minutes") { vm.setSleepTimer(minutes: 60) }
+                            } label: {
+                                HStack {
+                                    Image(systemName: "timer")
+                                    Text(vm.sleepTimerRemaining == nil ? "Sleep Timer" : "Ends in \(vm.formatSleepTimer())")
+                                }
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundColor(vm.sleepTimerRemaining == nil ? .secondary : Color(hex: "D4AF37"))
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                .background(Color.white.opacity(0.05))
+                                .cornerRadius(20)
+                            }
+                        }
+                    }
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                }
             }
 
             Spacer()
@@ -499,7 +646,6 @@ struct ContentView: View {
             // Controls Area
             VStack(spacing: 34) {
                 if !vm.earphonesConfirmed && !vm.finished {
-                    // Headset Step
                     VStack(spacing: 21) {
                         Text("Headset Experience")
                             .font(.system(size: 21, weight: .bold))
@@ -527,14 +673,12 @@ struct ContentView: View {
                     .padding(.horizontal, 21)
 
                 } else if !vm.finished {
-                    // Playback Controls
                     VStack(spacing: 34) {
                         if vm.isPlaybackStartedByUser {
                             progressView
                         }
 
                         HStack(spacing: 55) {
-                            // Start Button
                             Button(action: {
                                 withAnimation {
                                     vm.isPlaybackStartedByUser = true
@@ -547,13 +691,12 @@ struct ContentView: View {
                                     Text("Commence")
                                         .font(.system(size: 13, weight: .bold))
                                 }
-                                .foregroundColor(vm.isPlaybackStartedByUser ? .gray : Color(hex: "D4AF37"))
-                                .frame(width: 89, height: 89) // Fibonacci 89
+                                .foregroundColor(vm.isPlaybackStartedByUser || !vm.isConfigLoaded ? .gray : Color(hex: "D4AF37"))
+                                .frame(width: 89, height: 89)
                                 .background(Circle().fill(Color.white.opacity(0.05)))
                             }
-                            .disabled(vm.isPlaybackStartedByUser)
+                            .disabled(vm.isPlaybackStartedByUser || !vm.isConfigLoaded)
 
-                            // Stop Button
                             Button(action: {
                                 withAnimation { vm.stopPlayback() }
                             }) {
