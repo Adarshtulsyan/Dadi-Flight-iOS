@@ -39,6 +39,7 @@ class FlightViewModel: ObservableObject {
     @Published var currentTimeStr: String = "0:00"
     @Published var systemTimeStr: String = ""
     @Published var startTimeStr: String = ""
+    @Published var lastSyncStr: String = "Never"
     @Published var finished: Bool = false
     @Published var isConfigLoaded: Bool = false
     @Published var volume: Float = 1.0 {
@@ -202,8 +203,9 @@ class FlightViewModel: ObservableObject {
     }
 
     func startConfigPolling() {
+        print("Starting config polling every 10s...")
         fetchRemoteConfig()
-        configTimer = Timer.publish(every: 15, on: .main, in: .common)
+        configTimer = Timer.publish(every: 10, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
                 self?.fetchRemoteConfig()
@@ -211,37 +213,41 @@ class FlightViewModel: ObservableObject {
     }
 
     func fetchRemoteConfig() {
-        guard let url = URL(string: "\(apiUrl)?t=\(Date().timeIntervalSince1970)") else { return }
+        // Use a high-precision timestamp to bypass any caching layers
+        let timestamp = Date().timeIntervalSince1970
+        guard let url = URL(string: "\(apiUrl)?cb=\(timestamp)") else { return }
 
         var request = URLRequest(url: url)
-        request.cachePolicy = .reloadIgnoringLocalCacheData
-        request.timeoutInterval = 10
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        request.timeoutInterval = 8
         request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        request.setValue("no-cache", forHTTPHeaderField: "Pragma")
 
         URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             guard let self = self else { return }
 
             if let error = error {
-                print("Network error: \(error.localizedDescription)")
+                print("InflightSync: Poll Failed: \(error.localizedDescription)")
                 DispatchQueue.main.async {
                     self.isLive = false
-                    if !self.isConfigLoaded {
-                        self.statusText = "Sync required (Check Internet)"
-                    }
+                    let syncFormatter = DateFormatter()
+                    syncFormatter.dateFormat = "HH:mm:ss"
+                    self.lastSyncStr = "\(syncFormatter.string(from: Date())) (Net Error)"
                 }
                 return
             }
 
-            // Sync clock using Date header
-            if let httpResponse = response as? HTTPURLResponse,
-               let dateStr = httpResponse.allHeaderFields["Date"] as? String {
-                let headerFormatter = DateFormatter()
-                headerFormatter.locale = Locale(identifier: "en_US_POSIX")
-                headerFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
-                if let serverDate = headerFormatter.date(from: dateStr) {
-                    let offset = serverDate.timeIntervalSinceNow
-                    DispatchQueue.main.async {
-                        self.serverClockOffset = offset
+            // Sync clock using Date header to prevent device time manipulation
+            if let httpResponse = response as? HTTPURLResponse {
+                if let dateStr = httpResponse.allHeaderFields["Date"] as? String {
+                    let headerFormatter = DateFormatter()
+                    headerFormatter.locale = Locale(identifier: "en_US_POSIX")
+                    headerFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+                    if let serverDate = headerFormatter.date(from: dateStr) {
+                        let offset = serverDate.timeIntervalSinceNow
+                        DispatchQueue.main.async {
+                            self.serverClockOffset = offset
+                        }
                     }
                 }
             }
@@ -249,6 +255,11 @@ class FlightViewModel: ObservableObject {
             guard let data = data else { return }
 
             DispatchQueue.main.async {
+                let now = Date()
+                let syncFormatter = DateFormatter()
+                syncFormatter.dateFormat = "HH:mm:ss"
+                self.lastSyncStr = syncFormatter.string(from: now)
+
                 do {
                     let config = try JSONDecoder().decode(AppConfig.self, from: data)
                     let formatter = DateFormatter()
@@ -259,17 +270,18 @@ class FlightViewModel: ObservableObject {
                         self.isLive = true
                         self.isConfigLoaded = true
 
-                        if !self.isPlaybackStartedByUser && self.statusText == "Syncing journey details…" {
-                            self.statusText = "Ready for Journey"
-                        }
-
-                        let drift = abs(self.currentStartTime.timeIntervalSince(newDate))
-                        let timeChanged = config.startTime != self.lastFetchedTimeStr
-
-                        if self.lastFetchedTimeStr.isEmpty || timeChanged || drift > 1 {
+                        // Check if time has actually changed since last successful sync
+                        if config.startTime != self.lastFetchedTimeStr {
+                            print("InflightSync: New Time Detected: \(config.startTime)")
                             self.lastFetchedTimeStr = config.startTime
                             self.currentStartTime = newDate
                             UserDefaults.standard.set(newDate.timeIntervalSince1970, forKey: "start_time_interval")
+
+                            // Reset "Journey Completed" state if a future journey is scheduled
+                            if self.finished {
+                                self.finished = false
+                                self.statusText = "Ready for Journey"
+                            }
 
                             if self.isPlaybackStartedByUser {
                                 self.schedulePlayback()
@@ -277,8 +289,9 @@ class FlightViewModel: ObservableObject {
                         }
                     }
                 } catch {
-                    print("JSON parse error: \(error)")
+                    print("InflightSync: JSON Parse Error: \(error)")
                     self.isLive = false
+                    self.lastSyncStr += " (Parse Error)"
                 }
             }
         }.resume()
