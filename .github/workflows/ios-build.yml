@@ -25,6 +25,6 @@ jobs:
           xcodebuild build \
             -project "Dadi Flight App.xcodeproj" \
             -scheme "Dadi Flight App" \
-            -destination "platform=iOS Simulator,name=iPhone 15,OS=latest" \
+            -destination "platform=iOS Simulator,name=iPhone 17" \
             -configuration Debug \
             CODE_SIGNING_ALLOWED=NO
