@@ -399,6 +399,15 @@ class FlightViewModel: ObservableObject {
         updateNowPlayingInfo()
     }
 
+    func replayJourney() {
+        finished = false
+        earphonesConfirmed = true
+        isPlaybackStartedByUser = true
+        currentStartTime = getSyncedDate()
+        audioPlayer?.seek(to: .zero)
+        startAudio(at: 0)
+    }
+
     func handleCompletion() {
         isPlaybackStartedByUser = false
         timer?.cancel()
@@ -618,6 +627,19 @@ struct ContentView: View {
                             .multilineTextAlignment(.center)
                             .padding(.horizontal, 55)
                             .transition(.opacity)
+
+                        Button(action: {
+                            withAnimation { vm.replayJourney() }
+                        }) {
+                            Text("Replay Journey")
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundColor(.black)
+                                .padding(.vertical, 13)
+                                .frame(maxWidth: .infinity)
+                                .background(Color(hex: "D4AF37"))
+                                .cornerRadius(13)
+                        }
+                        .padding(.horizontal, 55)
                     }
                 }
 
