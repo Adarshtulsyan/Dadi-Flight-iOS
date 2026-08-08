@@ -311,7 +311,7 @@ class FlightViewModel: ObservableObject {
         let startDelay = currentStartTime.timeIntervalSince(now)
 
         // Use duration from player if available, otherwise fallback
-        let audioDuration = duration > 0 ? duration : 1200 // Default 20 mins
+        let audioDuration = duration > 0 ? duration : 6167 // Default 20 mins
         let endDelay = currentStartTime.addingTimeInterval(audioDuration).timeIntervalSince(now)
 
         if startDelay > 0 {
