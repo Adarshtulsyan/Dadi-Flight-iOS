@@ -95,10 +95,15 @@ class FlightViewModel: ObservableObject {
     }
 
     private func initializePlayer() {
-        // Explicitly look for the resource
-        if let url = Bundle.main.url(forResource: "audio", withExtension: "mp3") {
+        let bundleUrl = Bundle.main.url(forResource: "audio", withExtension: "mp3")
+        let fileManager = FileManager.default
+        let bundlePath = Bundle.main.bundlePath + "/audio.mp3"
+        let exists = fileManager.fileExists(atPath: bundleUrl?.path ?? bundlePath)
+
+        self.debugInfo += "File on Disk: \(exists ? "Yes" : "No")\n"
+
+        if let url = bundleUrl {
             print("InflightSync: Audio file confirmed in bundle at: \(url.lastPathComponent)")
-            self.debugInfo += "Audio: Found (\(url.lastPathComponent))\n"
 
             let player = AVPlayer(url: url)
             player.automaticallyWaitsToMinimizeStalling = false
@@ -110,11 +115,10 @@ class FlightViewModel: ObservableObject {
                 .sink { [weak self] status in
                     switch status {
                     case .readyToPlay:
-                        print("InflightSync: Player Ready")
                         self?.debugInfo += "Player: Ready\n"
                     case .failed:
-                        print("InflightSync: Player Failed: \(String(describing: player.error))")
-                        self?.debugInfo += "Player: Failed (\(player.error?.localizedDescription ?? "Unknown"))\n"
+                        let err = player.currentItem?.error?.localizedDescription ?? "Unknown"
+                        self?.debugInfo += "Player: Failed (\(err))\n"
                     default: break
                     }
                 }
@@ -130,7 +134,6 @@ class FlightViewModel: ObservableObject {
                 }
                 .store(in: &cancellables)
         } else {
-            print("InflightSync: CRITICAL - audio.mp3 not found in main bundle")
             self.debugInfo += "Audio: MISSING from Bundle\n"
             self.statusText = "Audio Resource Missing"
         }
@@ -168,7 +171,7 @@ class FlightViewModel: ObservableObject {
     private func setupAudioSession() {
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.playback, mode: .default, options: [.allowBluetoothHFP, .allowBluetoothA2DP])
+            try session.setCategory(.playback, mode: .default, options: [])
             try session.setActive(true)
         } catch {
             print("Failed to set audio session category: \(error)")
@@ -246,7 +249,9 @@ class FlightViewModel: ObservableObject {
                         let offset = serverDate.timeIntervalSinceNow
                         DispatchQueue.main.async {
                             self.serverClockOffset = offset
-                            self.debugInfo = "Offset: \(Int(offset))s | Server: \(dateStr.components(separatedBy: " ")[4])\n"
+                            // Update debug info without overwriting file check
+                            let time = dateStr.components(separatedBy: " ").indices.contains(4) ? dateStr.components(separatedBy: " ")[4] : ""
+                            print("InflightSync: Offset \(Int(offset))s")
                         }
                     }
                 }
@@ -267,7 +272,6 @@ class FlightViewModel: ObservableObject {
                     isoFormatter.timeZone = self.kolkataTimeZone
                     isoFormatter.formatOptions = [.withInternetDateTime, .withDashSeparatorInDate, .withColonSeparatorInTime]
 
-                    // Lenient parsing
                     var parsedDate = isoFormatter.date(from: config.startTime)
                     if parsedDate == nil {
                         let altFormatter = DateFormatter()
@@ -357,11 +361,15 @@ class FlightViewModel: ObservableObject {
             return
         }
 
-        let seekTime = CMTime(seconds: seconds, preferredTimescale: 600)
-
-        // Ensure seek is finished before playing for large files
-        player.seek(to: seekTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
-            if finished {
+        // If starting from beginning, play immediately
+        if seconds < 1.0 {
+            player.seek(to: .zero)
+            player.play()
+            self.updateNowPlayingInfo()
+        } else {
+            let seekTime = CMTime(seconds: seconds, preferredTimescale: 600)
+            // Use default tolerances for faster seeking on large files
+            player.seek(to: seekTime) { [weak self] _ in
                 player.play()
                 self?.updateNowPlayingInfo()
             }
@@ -430,8 +438,7 @@ class FlightViewModel: ObservableObject {
     func setSleepTimer(minutes: Int?) {
         sleepTimerCancellable?.cancel()
         guard let minutes = minutes else { return }
-        let remaining = TimeInterval(minutes * 60)
-        sleepTimerCancellable = Timer.publish(every: 1, on: .main, in: .common)
+        sleepTimerCancellable = Timer.publish(every: Double(minutes * 60), on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
                 self?.stopPlayback()
@@ -532,11 +539,14 @@ struct ContentView: View {
 
             // Diagnostic Section (Discrete)
             if !vm.debugInfo.isEmpty {
-                Text(vm.debugInfo)
-                    .font(.system(size: 8, design: .monospaced))
-                    .foregroundColor(.gray)
-                    .multilineTextAlignment(.center)
-                    .padding(.bottom, 5)
+                VStack(spacing: 2) {
+                    Text("--- DIAGNOSTICS ---").bold()
+                    Text(vm.debugInfo)
+                }
+                .font(.system(size: 8, design: .monospaced))
+                .foregroundColor(.gray)
+                .multilineTextAlignment(.center)
+                .padding(.bottom, 5)
             }
         }
     }
