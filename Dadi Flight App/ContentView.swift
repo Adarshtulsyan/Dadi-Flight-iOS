@@ -88,6 +88,32 @@ class FlightViewModel: ObservableObject {
         startConfigPolling()
         startSystemTimeUpdates()
         updateStartTimeStr()
+
+        // Initialize player
+        initializePlayer()
+    }
+
+    private func initializePlayer() {
+        if let url = Bundle.main.url(forResource: "audio", withExtension: "mp3") {
+            print("InflightSync: Audio file found at \(url.path)")
+            let player = AVPlayer(url: url)
+            self.audioPlayer = player
+            player.volume = self.volume
+
+            // Observe duration
+            player.currentItem?.publisher(for: \.duration)
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] duration in
+                    if duration.isValid && !duration.isIndefinite {
+                        self?.duration = duration.seconds
+                        self?.updateNowPlayingInfo()
+                    }
+                }
+                .store(in: &cancellables)
+        } else {
+            print("InflightSync: CRITICAL - Audio file not found in bundle!")
+            self.statusText = "Audio Resource Missing"
+        }
     }
 
     private func getSyncedDate() -> Date {
@@ -185,23 +211,6 @@ class FlightViewModel: ObservableObject {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
     }
 
-    func setPlayer(_ player: AVPlayer) {
-        self.audioPlayer = player
-        player.volume = self.volume
-
-        // Observe duration
-        player.currentItem?.publisher(for: \.duration)
-            .sink { [weak self] duration in
-                if duration.isValid && !duration.isIndefinite {
-                    DispatchQueue.main.async {
-                        self?.duration = duration.seconds
-                        self?.updateNowPlayingInfo()
-                    }
-                }
-            }
-            .store(in: &cancellables)
-    }
-
     func startConfigPolling() {
         print("Starting config polling every 10s...")
         fetchRemoteConfig()
@@ -239,14 +248,17 @@ class FlightViewModel: ObservableObject {
 
             // Sync clock using Date header to prevent device time manipulation
             if let httpResponse = response as? HTTPURLResponse {
-                if let dateStr = httpResponse.allHeaderFields["Date"] as? String {
+                // More robust header extraction
+                if let dateStr = httpResponse.value(forHTTPHeaderField: "Date") {
                     let headerFormatter = DateFormatter()
                     headerFormatter.locale = Locale(identifier: "en_US_POSIX")
                     headerFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+                    headerFormatter.timeZone = TimeZone(secondsFromGMT: 0)
                     if let serverDate = headerFormatter.date(from: dateStr) {
                         let offset = serverDate.timeIntervalSinceNow
                         DispatchQueue.main.async {
                             self.serverClockOffset = offset
+                            print("InflightSync: Server clock offset set to \(offset)s")
                         }
                     }
                 }
@@ -262,11 +274,28 @@ class FlightViewModel: ObservableObject {
 
                 do {
                     let config = try JSONDecoder().decode(AppConfig.self, from: data)
+
+                    // Robust date parsing for startTime
                     let formatter = DateFormatter()
-                    formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+                    formatter.locale = Locale(identifier: "en_US_POSIX")
                     formatter.timeZone = self.kolkataTimeZone
 
-                    if let newDate = formatter.date(from: config.startTime) {
+                    let possibleFormats = [
+                        "yyyy-MM-dd'T'HH:mm:ss",
+                        "yyyy-MM-dd'T'HH:mm:ss'Z'",
+                        "yyyy-MM-dd HH:mm:ss"
+                    ]
+
+                    var parsedDate: Date?
+                    for format in possibleFormats {
+                        formatter.dateFormat = format
+                        if let date = formatter.date(from: config.startTime) {
+                            parsedDate = date
+                            break
+                        }
+                    }
+
+                    if let newDate = parsedDate {
                         self.isLive = true
                         self.isConfigLoaded = true
 
@@ -287,11 +316,14 @@ class FlightViewModel: ObservableObject {
                                 self.schedulePlayback()
                             }
                         }
+                    } else {
+                        print("InflightSync: Failed to parse startTime: \(config.startTime)")
+                        self.lastSyncStr += " (Date Parse Error)"
                     }
                 } catch {
-                    print("InflightSync: JSON Parse Error: \(error)")
+                    print("InflightSync: JSON Decode Error: \(error)")
                     self.isLive = false
-                    self.lastSyncStr += " (Parse Error)"
+                    self.lastSyncStr += " (Decode Error)"
                 }
             }
         }.resume()
@@ -311,7 +343,7 @@ class FlightViewModel: ObservableObject {
         let startDelay = currentStartTime.timeIntervalSince(now)
 
         // Use duration from player if available, otherwise fallback
-        let audioDuration = duration > 0 ? duration : 6178 // Default 20 mins
+        let audioDuration = duration > 0 ? duration : 6178
         let endDelay = currentStartTime.addingTimeInterval(audioDuration).timeIntervalSince(now)
 
         if startDelay > 0 {
@@ -347,9 +379,14 @@ class FlightViewModel: ObservableObject {
         timer?.cancel()
         statusText = "Enjoying Cabin Journey"
 
+        guard let player = audioPlayer else {
+            statusText = "Audio Error"
+            return
+        }
+
         let seekTime = CMTime(seconds: seconds, preferredTimescale: 600)
-        audioPlayer?.seek(to: seekTime)
-        audioPlayer?.play()
+        player.seek(to: seekTime)
+        player.play()
         updateNowPlayingInfo()
 
         timer = Timer.publish(every: 0.5, on: .main, in: .common)
@@ -474,8 +511,6 @@ struct ContentView: View {
     @StateObject private var vm = FlightViewModel()
     @StateObject private var network = NetworkMonitor()
 
-    @State private var player = AVPlayer(url: Bundle.main.url(forResource: "audio", withExtension: "mp3") ?? URL(fileURLWithPath: ""))
-
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
@@ -498,9 +533,6 @@ struct ContentView: View {
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.85), value: vm.currentScreen)
         .preferredColorScheme(.dark)
-        .onAppear {
-            vm.setPlayer(player)
-        }
     }
 
     // MARK: - Welcome Screen
