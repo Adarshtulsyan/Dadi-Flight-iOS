@@ -148,7 +148,7 @@ class FlightViewModel: ObservableObject {
 
         if let player = audioPlayer, let item = player.currentItem {
             nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = player.currentTime().seconds
-            nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackDuration] = item.duration.seconds
+            nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = item.duration.seconds
             nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = player.rate
         }
 
