@@ -6,17 +6,23 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		3B2B4C442FF5325A004F430C /* audio.mp3 in Resources */ = {isa = PBXBuildFile; fileRef = 3B2B4C432FF5325A004F430C /* audio.mp3 */; };
+		3B2B4C462FF5325A004F430C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 3B2B4C452FF5325A004F430C /* Assets.xcassets */; };
+		3B2B4C482FF5325A004F430C /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B2B4C472FF5325A004F430C /* ContentView.swift */; };
+		3B2B4C4A2FF5325A004F430C /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 3B2B4C492FF5325A004F430C /* PrivacyInfo.xcprivacy */; };
+		3B2B4C4C2FF5325A004F430C /* Dadi_Flight_AppApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B2B4C4B2FF5325A004F430C /* Dadi_Flight_AppApp.swift */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		3B2B4C352FF53258004F430C /* Dadi Flight App.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Dadi Flight App.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		3B2B4C432FF5325A004F430C /* audio.mp3 */ = {isa = PBXFileReference; lastKnownFileType = audio.mp3; path = audio.mp3; sourceTree = "<group>"; };
+		3B2B4C452FF5325A004F430C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		3B2B4C472FF5325A004F430C /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		3B2B4C492FF5325A004F430C /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		3B2B4C4B2FF5325A004F430C /* Dadi_Flight_AppApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Dadi_Flight_AppApp.swift; sourceTree = "<group>"; };
+		3B2B4C4D2FF5325A004F430C /* Dadi-Flight-App-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = "Dadi-Flight-App-Info.plist"; path = "../Dadi-Flight-App-Info.plist"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
-
-/* Begin PBXFileSystemSynchronizedRootGroup section */
-		3B2B4C372FF53258004F430C /* Dadi Flight App */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "Dadi Flight App";
-			sourceTree = "<group>";
-		};
-/* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		3B2B4C322FF53258004F430C /* Frameworks */ = {
@@ -33,6 +39,7 @@
 			isa = PBXGroup;
 			children = (
 				3B2B4C372FF53258004F430C /* Dadi Flight App */,
+				3B2B4C4D2FF5325A004F430C /* Dadi-Flight-App-Info.plist */,
 				3B2B4C362FF53258004F430C /* Products */,
 			);
 			sourceTree = "<group>";
@@ -43,6 +50,18 @@
 				3B2B4C352FF53258004F430C /* Dadi Flight App.app */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		3B2B4C372FF53258004F430C /* Dadi Flight App */ = {
+			isa = PBXGroup;
+			children = (
+				3B2B4C4B2FF5325A004F430C /* Dadi_Flight_AppApp.swift */,
+				3B2B4C472FF5325A004F430C /* ContentView.swift */,
+				3B2B4C452FF5325A004F430C /* Assets.xcassets */,
+				3B2B4C432FF5325A004F430C /* audio.mp3 */,
+				3B2B4C492FF5325A004F430C /* PrivacyInfo.xcprivacy */,
+			);
+			path = "Dadi Flight App";
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -59,9 +78,6 @@
 			buildRules = (
 			);
 			dependencies = (
-			);
-			fileSystemSynchronizedGroups = (
-				3B2B4C372FF53258004F430C /* Dadi Flight App */,
 			);
 			name = "Dadi Flight App";
 			packageProductDependencies = (
@@ -109,6 +125,9 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				3B2B4C462FF5325A004F430C /* Assets.xcassets in Resources */,
+				3B2B4C442FF5325A004F430C /* audio.mp3 in Resources */,
+				3B2B4C4A2FF5325A004F430C /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -119,6 +138,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				3B2B4C4C2FF5325A004F430C /* Dadi_Flight_AppApp.swift in Sources */,
+				3B2B4C482FF5325A004F430C /* ContentView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
