@@ -70,10 +70,9 @@ class FlightViewModel: ObservableObject {
 
     private var lastFetchedTimeStr: String = ""
     private let apiUrl = "https://raw.githubusercontent.com/Adarshtulsyan/Inflight-audio-app/main/config.json"
-    private let kolkataTimeZone = TimeZone(identifier: "Asia/Kolkata") ?? TimeZone(secondsFromGMT: 19800)! // Fallback to IST offset
+    private let kolkataTimeZone = TimeZone(identifier: "Asia/Kolkata") ?? TimeZone(secondsFromGMT: 19800)!
 
     init() {
-        // Load stored time if available, otherwise default to a distant future to avoid "Completed" state
         if let storedTimeInterval = UserDefaults.standard.object(forKey: "start_time_interval") as? TimeInterval {
             self.currentStartTime = Date(timeIntervalSince1970: storedTimeInterval)
             self.isConfigLoaded = true
@@ -89,7 +88,6 @@ class FlightViewModel: ObservableObject {
         startSystemTimeUpdates()
         updateStartTimeStr()
 
-        // Initialize player
         initializePlayer()
     }
 
@@ -97,10 +95,10 @@ class FlightViewModel: ObservableObject {
         if let url = Bundle.main.url(forResource: "audio", withExtension: "mp3") {
             print("InflightSync: Audio file found at \(url.path)")
             let player = AVPlayer(url: url)
+            player.automaticallyWaitsToMinimizeStalling = false
             self.audioPlayer = player
             player.volume = self.volume
 
-            // Observe duration
             player.currentItem?.publisher(for: \.duration)
                 .receive(on: DispatchQueue.main)
                 .sink { [weak self] duration in
@@ -148,11 +146,8 @@ class FlightViewModel: ObservableObject {
     private func setupAudioSession() {
         let session = AVAudioSession.sharedInstance()
         do {
-            // Enable background audio and bluetooth support
             try session.setCategory(.playback, mode: .default, options: [.allowBluetoothHFP, .allowBluetoothA2DP])
             try session.setActive(true)
-
-            // Handle audio interruptions (calls, etc.)
             NotificationCenter.default.addObserver(self, selector: #selector(handleInterruption), name: AVAudioSession.interruptionNotification, object: session)
         } catch {
             print("Failed to set audio session category: \(error)")
@@ -165,7 +160,6 @@ class FlightViewModel: ObservableObject {
               let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
 
         if type == .began {
-            // Interruption began (e.g., incoming call), pause audio
             audioPlayer?.pause()
         } else if type == .ended {
             if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
@@ -212,7 +206,6 @@ class FlightViewModel: ObservableObject {
     }
 
     func startConfigPolling() {
-        print("Starting config polling every 10s...")
         fetchRemoteConfig()
         configTimer = Timer.publish(every: 10, on: .main, in: .common)
             .autoconnect()
@@ -222,7 +215,6 @@ class FlightViewModel: ObservableObject {
     }
 
     func fetchRemoteConfig() {
-        // Use a high-precision timestamp to bypass any caching layers
         let timestamp = Date().timeIntervalSince1970
         guard let url = URL(string: "\(apiUrl)?cb=\(timestamp)") else { return }
 
@@ -246,9 +238,7 @@ class FlightViewModel: ObservableObject {
                 return
             }
 
-            // Sync clock using Date header to prevent device time manipulation
             if let httpResponse = response as? HTTPURLResponse {
-                // More robust header extraction
                 if let dateStr = httpResponse.value(forHTTPHeaderField: "Date") {
                     let headerFormatter = DateFormatter()
                     headerFormatter.locale = Locale(identifier: "en_US_POSIX")
@@ -275,7 +265,6 @@ class FlightViewModel: ObservableObject {
                 do {
                     let config = try JSONDecoder().decode(AppConfig.self, from: data)
 
-                    // Robust date parsing for startTime
                     let formatter = DateFormatter()
                     formatter.locale = Locale(identifier: "en_US_POSIX")
                     formatter.timeZone = self.kolkataTimeZone
@@ -299,14 +288,12 @@ class FlightViewModel: ObservableObject {
                         self.isLive = true
                         self.isConfigLoaded = true
 
-                        // Check if time has actually changed since last successful sync
                         if config.startTime != self.lastFetchedTimeStr {
                             print("InflightSync: New Time Detected: \(config.startTime)")
                             self.lastFetchedTimeStr = config.startTime
                             self.currentStartTime = newDate
                             UserDefaults.standard.set(newDate.timeIntervalSince1970, forKey: "start_time_interval")
 
-                            // Reset "Journey Completed" state if a future journey is scheduled
                             if self.finished {
                                 self.finished = false
                                 self.statusText = "Ready for Journey"
@@ -342,7 +329,6 @@ class FlightViewModel: ObservableObject {
         let now = getSyncedDate()
         let startDelay = currentStartTime.timeIntervalSince(now)
 
-        // Use duration from player if available, otherwise fallback
         let audioDuration = duration > 0 ? duration : 6178
         let endDelay = currentStartTime.addingTimeInterval(audioDuration).timeIntervalSince(now)
 
@@ -385,9 +371,14 @@ class FlightViewModel: ObservableObject {
         }
 
         let seekTime = CMTime(seconds: seconds, preferredTimescale: 600)
-        player.seek(to: seekTime)
-        player.play()
-        updateNowPlayingInfo()
+
+        // Wait for seek to complete before playing
+        player.seek(to: seekTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
+            if finished {
+                player.play()
+                self?.updateNowPlayingInfo()
+            }
+        }
 
         timer = Timer.publish(every: 0.5, on: .main, in: .common)
             .autoconnect()
@@ -406,7 +397,6 @@ class FlightViewModel: ObservableObject {
         let now = getSyncedDate()
         let expectedEnd = currentStartTime.addingTimeInterval(total)
 
-        // Absolute Time Completion Check
         if now >= expectedEnd && total > 0 {
             handleCompletion()
             return
