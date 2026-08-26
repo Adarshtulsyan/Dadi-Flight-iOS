@@ -180,7 +180,7 @@ class FlightViewModel: ObservableObject {
         URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             guard let self = self else { return }
 
-            if let error = error {
+            if error != nil {
                 DispatchQueue.main.async {
                     self.isLive = false
                     self.lastSyncStr = "Net Error"
