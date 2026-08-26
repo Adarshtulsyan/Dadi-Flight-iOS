@@ -47,10 +47,6 @@ class FlightViewModel: ObservableObject {
             audioPlayer?.volume = volume
         }
     }
-    @Published var sleepTimerRemaining: TimeInterval? = nil
-
-    // Diagnostic Info
-    @Published var debugInfo: String = ""
 
     private var sleepTimerCancellable: AnyCancellable?
     private var systemTimer: AnyCancellable?
@@ -90,53 +86,6 @@ class FlightViewModel: ObservableObject {
         startConfigPolling()
         startSystemTimeUpdates()
         updateStartTimeStr()
-
-        initializePlayer()
-    }
-
-    private func initializePlayer() {
-        let bundleUrl = Bundle.main.url(forResource: "audio", withExtension: "mp3")
-        let fileManager = FileManager.default
-        let bundlePath = Bundle.main.bundlePath + "/audio.mp3"
-        let exists = fileManager.fileExists(atPath: bundleUrl?.path ?? bundlePath)
-
-        self.debugInfo += "File on Disk: \(exists ? "Yes" : "No")\n"
-
-        if let url = bundleUrl {
-            print("InflightSync: Audio file confirmed in bundle at: \(url.lastPathComponent)")
-
-            let player = AVPlayer(url: url)
-            player.automaticallyWaitsToMinimizeStalling = false
-            self.audioPlayer = player
-            player.volume = self.volume
-
-            player.currentItem?.publisher(for: \.status)
-                .receive(on: DispatchQueue.main)
-                .sink { [weak self] status in
-                    switch status {
-                    case .readyToPlay:
-                        self?.debugInfo += "Player: Ready\n"
-                    case .failed:
-                        let err = player.currentItem?.error?.localizedDescription ?? "Unknown"
-                        self?.debugInfo += "Player: Failed (\(err))\n"
-                    default: break
-                    }
-                }
-                .store(in: &cancellables)
-
-            player.currentItem?.publisher(for: \.duration)
-                .receive(on: DispatchQueue.main)
-                .sink { [weak self] duration in
-                    if duration.isValid && !duration.isIndefinite {
-                        self?.duration = duration.seconds
-                        self?.updateNowPlayingInfo()
-                    }
-                }
-                .store(in: &cancellables)
-        } else {
-            self.debugInfo += "Audio: MISSING from Bundle\n"
-            self.statusText = "Audio Resource Missing"
-        }
     }
 
     private func getSyncedDate() -> Date {
@@ -171,7 +120,7 @@ class FlightViewModel: ObservableObject {
     private func setupAudioSession() {
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.playback, mode: .default, options: [])
+            try session.setCategory(.playback, mode: .default, options: [.allowBluetoothHFP, .allowBluetoothA2DP])
             try session.setActive(true)
         } catch {
             print("Failed to set audio session category: \(error)")
@@ -199,7 +148,7 @@ class FlightViewModel: ObservableObject {
 
         if let player = audioPlayer, let item = player.currentItem {
             nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = player.currentTime().seconds
-            nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = item.duration.seconds
+            nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackDuration] = item.duration.seconds
             nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = player.rate
         }
 
@@ -249,9 +198,6 @@ class FlightViewModel: ObservableObject {
                         let offset = serverDate.timeIntervalSinceNow
                         DispatchQueue.main.async {
                             self.serverClockOffset = offset
-                            // Update debug info without overwriting file check
-                            let time = dateStr.components(separatedBy: " ").indices.contains(4) ? dateStr.components(separatedBy: " ")[4] : ""
-                            print("InflightSync: Offset \(Int(offset))s")
                         }
                     }
                 }
@@ -356,19 +302,34 @@ class FlightViewModel: ObservableObject {
         timer?.cancel()
         statusText = "Enjoying Cabin Journey"
 
+        if audioPlayer == nil {
+            if let url = Bundle.main.url(forResource: "audio", withExtension: "mp3") {
+                audioPlayer = AVPlayer(url: url)
+                audioPlayer?.volume = volume
+
+                audioPlayer?.currentItem?.publisher(for: \.duration)
+                    .receive(on: DispatchQueue.main)
+                    .sink { [weak self] duration in
+                        if duration.isValid && !duration.isIndefinite {
+                            self?.duration = duration.seconds
+                            self?.updateNowPlayingInfo()
+                        }
+                    }
+                    .store(in: &cancellables)
+            }
+        }
+
         guard let player = audioPlayer else {
-            statusText = "Audio Error"
+            statusText = "Audio Resource Missing"
             return
         }
 
-        // If starting from beginning, play immediately
         if seconds < 1.0 {
             player.seek(to: .zero)
             player.play()
             self.updateNowPlayingInfo()
         } else {
             let seekTime = CMTime(seconds: seconds, preferredTimescale: 600)
-            // Use default tolerances for faster seeking on large files
             player.seek(to: seekTime) { [weak self] _ in
                 player.play()
                 self?.updateNowPlayingInfo()
@@ -536,18 +497,6 @@ struct ContentView: View {
             centralImageView
             Spacer()
             controlsView
-
-            // Diagnostic Section (Discrete)
-            if !vm.debugInfo.isEmpty {
-                VStack(spacing: 2) {
-                    Text("--- DIAGNOSTICS ---").bold()
-                    Text(vm.debugInfo)
-                }
-                .font(.system(size: 8, design: .monospaced))
-                .foregroundColor(.gray)
-                .multilineTextAlignment(.center)
-                .padding(.bottom, 5)
-            }
         }
     }
 
