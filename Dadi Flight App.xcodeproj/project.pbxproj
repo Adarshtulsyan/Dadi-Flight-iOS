@@ -6,13 +6,8 @@
 	objectVersion = 77;
 	objects = {
 
-/* Begin PBXBuildFile section */
-		3B2B4C442FF5325A004F430C /* audio.mp3 in Resources */ = {isa = PBXBuildFile; fileRef = 3B2B4C432FF5325A004F430C /* audio.mp3 */; };
-/* End PBXBuildFile section */
-
 /* Begin PBXFileReference section */
 		3B2B4C352FF53258004F430C /* Dadi Flight App.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Dadi Flight App.app"; sourceTree = BUILT_PRODUCTS_DIR; };
-		3B2B4C432FF5325A004F430C /* audio.mp3 */ = {isa = PBXFileReference; lastKnownFileType = audio.mp3; name = audio.mp3; path = "Dadi Flight App/audio.mp3"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -114,7 +109,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				3B2B4C442FF5325A004F430C /* audio.mp3 in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
