@@ -16,7 +16,7 @@
 
 /* Begin PBXFileReference section */
 		3B2B4C352FF53258004F430C /* Dadi Flight App.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Dadi Flight App.app"; sourceTree = BUILT_PRODUCTS_DIR; };
-		3B2B4C432FF5325A004F430C /* audio.mp3 */ = {isa = PBXFileReference; lastKnownFileType = audio.mp3; path = audio.mp3; sourceTree = "<group>"; };
+		3B2B4C432FF5325A004F430C /* audio.mp3 */ = {isa = PBXFileReference; lastKnownFileType = audio.mpeg; path = audio.mp3; sourceTree = "<group>"; };
 		3B2B4C452FF5325A004F430C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		3B2B4C472FF5325A004F430C /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		3B2B4C492FF5325A004F430C /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
