@@ -47,8 +47,9 @@ class FlightViewModel: ObservableObject {
             audioPlayer?.volume = volume
         }
     }
-
+    @Published var sleepTimerRemaining: TimeInterval? = nil
     private var sleepTimerCancellable: AnyCancellable?
+
     private var systemTimer: AnyCancellable?
     private var cancellables = Set<AnyCancellable>()
 
@@ -61,7 +62,10 @@ class FlightViewModel: ObservableObject {
     private var configTimer: AnyCancellable?
 
     @Published var serverClockOffset: TimeInterval = 0
-    private var currentStartTime: Date {
+
+    // We keep separate variables for the official Target Time and the current Playback Start Time
+    private var officialStartTime: Date = .distantFuture
+    private var currentPlaybackStartTime: Date = .distantFuture {
         didSet {
             updateStartTimeStr()
         }
@@ -72,12 +76,15 @@ class FlightViewModel: ObservableObject {
     private let kolkataTimeZone = TimeZone(identifier: "Asia/Kolkata") ?? TimeZone(secondsFromGMT: 19800)!
 
     init() {
+        // Load stored time if available
         if let storedTimeInterval = UserDefaults.standard.object(forKey: "start_time_interval") as? TimeInterval {
-            self.currentStartTime = Date(timeIntervalSince1970: storedTimeInterval)
+            self.officialStartTime = Date(timeIntervalSince1970: storedTimeInterval)
+            self.currentPlaybackStartTime = self.officialStartTime
             self.isConfigLoaded = true
             self.statusText = "Ready for Journey"
         } else {
-            self.currentStartTime = Date.distantFuture
+            self.officialStartTime = .distantFuture
+            self.currentPlaybackStartTime = .distantFuture
             self.isConfigLoaded = false
         }
 
@@ -86,6 +93,29 @@ class FlightViewModel: ObservableObject {
         startConfigPolling()
         startSystemTimeUpdates()
         updateStartTimeStr()
+
+        initializePlayer()
+    }
+
+    private func initializePlayer() {
+        if let url = Bundle.main.url(forResource: "audio", withExtension: "mp3") {
+            let player = AVPlayer(url: url)
+            player.automaticallyWaitsToMinimizeStalling = false
+            self.audioPlayer = player
+            player.volume = self.volume
+
+            player.currentItem?.publisher(for: \.duration)
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] duration in
+                    if duration.isValid && !duration.isIndefinite {
+                        self?.duration = duration.seconds
+                        self?.updateNowPlayingInfo()
+                    }
+                }
+                .store(in: &cancellables)
+        } else {
+            self.statusText = "Audio Resource Missing"
+        }
     }
 
     private func getSyncedDate() -> Date {
@@ -105,7 +135,7 @@ class FlightViewModel: ObservableObject {
     }
 
     private func updateStartTimeStr() {
-        guard currentStartTime != .distantFuture else {
+        guard officialStartTime != .distantFuture else {
             self.startTimeStr = "Waiting for Sync"
             return
         }
@@ -113,7 +143,7 @@ class FlightViewModel: ObservableObject {
         formatter.dateFormat = "MMM d, HH:mm:ss"
         formatter.timeZone = kolkataTimeZone
         DispatchQueue.main.async {
-            self.startTimeStr = formatter.string(from: self.currentStartTime)
+            self.startTimeStr = formatter.string(from: self.officialStartTime)
         }
     }
 
@@ -122,18 +152,38 @@ class FlightViewModel: ObservableObject {
         do {
             try session.setCategory(.playback, mode: .default, options: [.allowBluetoothHFP, .allowBluetoothA2DP])
             try session.setActive(true)
+            NotificationCenter.default.addObserver(self, selector: #selector(handleInterruption), name: AVAudioSession.interruptionNotification, object: session)
         } catch {
             print("Failed to set audio session category: \(error)")
         }
     }
 
+    @objc private func handleInterruption(notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
+
+        if type == .began {
+            audioPlayer?.pause()
+        } else if type == .ended {
+            if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
+                let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+                if options.contains(.shouldResume) && isPlaybackStartedByUser {
+                    audioPlayer?.play()
+                }
+            }
+        }
+    }
+
     private func setupRemoteCommandCenter() {
         let commandCenter = MPRemoteCommandCenter.shared()
+
         commandCenter.playCommand.isEnabled = true
         commandCenter.playCommand.addTarget { [weak self] _ in
             self?.audioPlayer?.play()
             return .success
         }
+
         commandCenter.pauseCommand.isEnabled = true
         commandCenter.pauseCommand.addTarget { [weak self] _ in
             self?.audioPlayer?.pause()
@@ -183,7 +233,9 @@ class FlightViewModel: ObservableObject {
             if error != nil {
                 DispatchQueue.main.async {
                     self.isLive = false
-                    self.lastSyncStr = "Net Error"
+                    let syncFormatter = DateFormatter()
+                    syncFormatter.dateFormat = "HH:mm:ss"
+                    self.lastSyncStr = "\(syncFormatter.string(from: Date())) (Net Error)"
                 }
                 return
             }
@@ -230,9 +282,15 @@ class FlightViewModel: ObservableObject {
                         self.isLive = true
                         self.isConfigLoaded = true
 
-                        if config.startTime != self.lastFetchedTimeStr {
+                        // Check if time has actually changed since last successful sync or if we have drifted
+                        let drift = abs(self.officialStartTime.timeIntervalSince(newDate))
+                        let timeChanged = config.startTime != self.lastFetchedTimeStr
+
+                        if self.lastFetchedTimeStr.isEmpty || timeChanged || drift > 1 {
+                            print("InflightSync: New Time Detected or Drifted: \(config.startTime)")
                             self.lastFetchedTimeStr = config.startTime
-                            self.currentStartTime = newDate
+                            self.officialStartTime = newDate
+                            self.currentPlaybackStartTime = newDate
                             UserDefaults.standard.set(newDate.timeIntervalSince1970, forKey: "start_time_interval")
 
                             if self.finished {
@@ -249,7 +307,7 @@ class FlightViewModel: ObservableObject {
                     }
                 } catch {
                     self.isLive = false
-                    self.lastSyncStr += " (JSON Error)"
+                    self.lastSyncStr += " (Decode Error)"
                 }
             }
         }.resume()
@@ -266,10 +324,10 @@ class FlightViewModel: ObservableObject {
         audioPlayer?.seek(to: .zero)
 
         let now = getSyncedDate()
-        let startDelay = currentStartTime.timeIntervalSince(now)
+        let startDelay = currentPlaybackStartTime.timeIntervalSince(now)
 
         let audioDuration = duration > 0 ? duration : 6178
-        let endDelay = currentStartTime.addingTimeInterval(audioDuration).timeIntervalSince(now)
+        let endDelay = currentPlaybackStartTime.addingTimeInterval(audioDuration).timeIntervalSince(now)
 
         if startDelay > 0 {
             startCountdown(from: startDelay)
@@ -282,12 +340,13 @@ class FlightViewModel: ObservableObject {
 
     private func startCountdown(from seconds: TimeInterval) {
         timer?.cancel()
+
         timer = Timer.publish(every: 1, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
                 guard let self = self else { return }
                 let now = self.getSyncedDate()
-                let remaining = self.currentStartTime.timeIntervalSince(now)
+                let remaining = self.currentPlaybackStartTime.timeIntervalSince(now)
 
                 if remaining > 0 {
                     self.statusText = "Starts in \(self.formatCountdown(Int(ceil(remaining))))"
@@ -302,38 +361,17 @@ class FlightViewModel: ObservableObject {
         timer?.cancel()
         statusText = "Enjoying Cabin Journey"
 
-        if audioPlayer == nil {
-            if let url = Bundle.main.url(forResource: "audio", withExtension: "mp3") {
-                audioPlayer = AVPlayer(url: url)
-                audioPlayer?.volume = volume
-
-                audioPlayer?.currentItem?.publisher(for: \.duration)
-                    .receive(on: DispatchQueue.main)
-                    .sink { [weak self] duration in
-                        if duration.isValid && !duration.isIndefinite {
-                            self?.duration = duration.seconds
-                            self?.updateNowPlayingInfo()
-                        }
-                    }
-                    .store(in: &cancellables)
-            }
-        }
-
         guard let player = audioPlayer else {
-            statusText = "Audio Resource Missing"
+            statusText = "Audio Error"
             return
         }
 
-        if seconds < 1.0 {
-            player.seek(to: .zero)
+        let seekTime = CMTime(seconds: seconds, preferredTimescale: 600)
+
+        // Wait for seek to complete before playing for large files
+        player.seek(to: seekTime) { [weak self] _ in
             player.play()
-            self.updateNowPlayingInfo()
-        } else {
-            let seekTime = CMTime(seconds: seconds, preferredTimescale: 600)
-            player.seek(to: seekTime) { [weak self] _ in
-                player.play()
-                self?.updateNowPlayingInfo()
-            }
+            self?.updateNowPlayingInfo()
         }
 
         timer = Timer.publish(every: 0.5, on: .main, in: .common)
@@ -346,10 +384,12 @@ class FlightViewModel: ObservableObject {
 
     private func updateProgress() {
         guard let player = audioPlayer, let item = player.currentItem else { return }
+
         let current = player.currentTime().seconds
         let total = item.duration.seconds
+
         let now = getSyncedDate()
-        let expectedEnd = currentStartTime.addingTimeInterval(total)
+        let expectedEnd = currentPlaybackStartTime.addingTimeInterval(total)
 
         if now >= expectedEnd && total > 0 {
             handleCompletion()
@@ -357,9 +397,11 @@ class FlightViewModel: ObservableObject {
         }
 
         guard total > 0 && !total.isNaN else { return }
+
         self.currentTime = current
         self.duration = total
         self.progress = current / total
+
         let remaining = max(0, total - current)
         self.currentTimeStr = formatTime(current)
         self.remainingTime = "-\(formatTime(remaining))"
@@ -382,7 +424,8 @@ class FlightViewModel: ObservableObject {
         finished = false
         earphonesConfirmed = true
         isPlaybackStartedByUser = true
-        currentStartTime = getSyncedDate()
+        // Set playback start time to "now" without changing the official target time shown in header
+        currentPlaybackStartTime = getSyncedDate()
         audioPlayer?.seek(to: .zero)
         startAudio(at: 0)
     }
@@ -390,6 +433,8 @@ class FlightViewModel: ObservableObject {
     func handleCompletion() {
         isPlaybackStartedByUser = false
         timer?.cancel()
+        sleepTimerCancellable?.cancel()
+        sleepTimerRemaining = nil
         finished = true
         statusText = "Journey Completed"
         audioPlayer?.pause()
@@ -398,24 +443,42 @@ class FlightViewModel: ObservableObject {
 
     func setSleepTimer(minutes: Int?) {
         sleepTimerCancellable?.cancel()
-        guard let minutes = minutes else { return }
-        sleepTimerCancellable = Timer.publish(every: Double(minutes * 60), on: .main, in: .common)
+        guard let minutes = minutes else {
+            sleepTimerRemaining = nil
+            return
+        }
+
+        sleepTimerRemaining = TimeInterval(minutes * 60)
+        sleepTimerCancellable = Timer.publish(every: 1, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
-                self?.stopPlayback()
-                self?.sleepTimerCancellable?.cancel()
+                guard let self = self, let remaining = self.sleepTimerRemaining else { return }
+                if remaining > 1 {
+                    self.sleepTimerRemaining = remaining - 1
+                } else {
+                    self.stopPlayback()
+                    self.sleepTimerRemaining = nil
+                    self.sleepTimerCancellable?.cancel()
+                }
             }
     }
 
-    func formatSleepTimer() -> String { "" }
+    func formatSleepTimer() -> String {
+        guard let remaining = sleepTimerRemaining else { return "" }
+        let mins = Int(remaining) / 60
+        let secs = Int(remaining) % 60
+        return String(format: "%d:%02d", mins, secs)
+    }
 
     private func formatCountdown(_ totalSecs: Int) -> String {
-        let h = totalSecs / 3600
-        let m = (totalSecs % 3600) / 60
-        let s = totalSecs % 60
-        if h > 0 { return "\(h)h \(m)m \(s)s" }
-        if m > 0 { return "\(m)m \(s)s" }
-        return "\(s)s"
+        let days = totalSecs / 86400
+        let hours = (totalSecs % 86400) / 3600
+        let minutes = (totalSecs % 3600) / 60
+        let seconds = totalSecs % 60
+        if days > 0 { return "\(days)d \(hours)h \(minutes)m" }
+        if hours > 0 { return "\(hours)h \(minutes)m \(seconds)s" }
+        if minutes > 0 { return "\(minutes)m \(seconds)s" }
+        return "\(seconds)s"
     }
 
     private func formatTime(_ secs: Double) -> String {
@@ -457,6 +520,7 @@ struct ContentView: View {
         .preferredColorScheme(.dark)
     }
 
+    // MARK: - Welcome Screen
     var welcomeView: some View {
         VStack(spacing: 34) {
             Image("dadi")
@@ -466,22 +530,34 @@ struct ContentView: View {
                 .clipShape(Circle())
                 .overlay(Circle().stroke(Color(hex: "D4AF37"), lineWidth: 2))
                 .shadow(color: Color(hex: "D4AF37").opacity(0.3), radius: 13)
+                .padding(.bottom, 8)
 
             Text("Jai Dadi Ki")
                 .font(.system(size: 34, weight: .bold))
                 .foregroundColor(Color(hex: "D4AF37"))
 
-            Text("We are honored to have you on board for this unique spiritual experience.")
+            Text("We are honored to have you on board for this unique spiritual experience. Join us as we commence the Rani Sati Dadi Mangal Path, beautifully orchestrated for our journey through the skies.")
                 .font(.system(size: 16))
+                .lineSpacing(5)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 34)
 
-            Button(action: { withAnimation { vm.currentScreen = .main } }) {
+            VStack(spacing: 8) {
+                Text("Organized by")
+                    .font(.system(size: 13))
+                    .foregroundColor(.secondary)
+                Text("Marwari Samaj")
+                    .font(.system(size: 21, weight: .semibold))
+            }
+
+            Button(action: {
+                withAnimation { vm.currentScreen = .main }
+            }) {
                 Text("Enter Cabin")
                     .font(.system(size: 21, weight: .bold))
                     .foregroundColor(.black)
-                    .frame(maxWidth: .infinity)
                     .padding(.vertical, 13)
+                    .frame(maxWidth: .infinity)
                     .background(Color(hex: "D4AF37"))
                     .cornerRadius(13)
             }
@@ -489,126 +565,256 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - Main Content
     var mainContentView: some View {
         VStack(spacing: 0) {
-            headerView
+            // Header
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Rani Sati Dadi Mangal Path")
+                        .font(.system(size: 21, weight: .bold))
+                    Text("Organised by Marwari Samaj")
+                        .font(.system(size: 13))
+                        .foregroundColor(.secondary)
+
+                    HStack(spacing: 13) {
+                        Text("Device: \(vm.systemTimeStr)")
+                        Text("Target: \(vm.startTimeStr)")
+                    }
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(Color(hex: "D4AF37").opacity(0.7))
+                    .padding(.top, 5)
+                }
+                Spacer()
+
+                VStack(alignment: .trailing, spacing: 5) {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(network.isConnected ? Color(hex: "D4AF37") : .red)
+                            .frame(width: 8, height: 8)
+                        Text(network.isConnected ? (vm.isLive ? "LIVE" : "SYNCING") : "OFFLINE")
+                            .font(.system(size: 10, weight: .black))
+                            .foregroundColor(network.isConnected ? Color(hex: "D4AF37") : .red)
+                    }
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 8)
+                    .background(Color.white.opacity(0.05))
+                    .cornerRadius(21)
+                }
+            }
+            .padding(.horizontal, 21)
+            .padding(.top, 21)
+            .padding(.bottom, 13)
+
             Divider().background(Color.white.opacity(0.1))
-            Spacer()
-            centralImageView
-            Spacer()
-            controlsView
-        }
-    }
 
-    var headerView: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Rani Sati Dadi Mangal Path").font(.system(size: 21, weight: .bold))
-                HStack(spacing: 13) {
-                    Text("Device: \(vm.systemTimeStr)")
-                    Text("Target: \(vm.startTimeStr)")
+            Spacer()
+
+            // Central Image / Audio Area
+            VStack(spacing: 21) {
+                ZStack {
+                    Circle()
+                        .fill(Color(hex: "D4AF37").opacity(0.12))
+                        .frame(width: 233, height: 233)
+                        .blur(radius: 55)
+
+                    Image("dadi")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 144, height: 144)
+                        .clipShape(RoundedRectangle(cornerRadius: 34))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 34)
+                                .stroke(Color(hex: "D4AF37").opacity(0.3), lineWidth: 1)
+                        )
+                        .shadow(color: .black.opacity(0.4), radius: 21, x: 0, y: 13)
                 }
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundColor(Color(hex: "D4AF37").opacity(0.7))
-            }
-            Spacer()
-            statusBadge
-        }
-        .padding(21)
-    }
 
-    var statusBadge: some View {
-        HStack(spacing: 8) {
-            Circle().fill(network.isConnected ? Color(hex: "D4AF37") : .red).frame(width: 8, height: 8)
-            Text(network.isConnected ? (vm.isLive ? "LIVE" : "SYNCING") : "OFFLINE")
-                .font(.system(size: 10, weight: .black))
-                .foregroundColor(network.isConnected ? Color(hex: "D4AF37") : .red)
-        }
-        .padding(.horizontal, 13).padding(.vertical, 8)
-        .background(Color.white.opacity(0.05)).cornerRadius(21)
-    }
+                VStack(spacing: 13) {
+                    Text(vm.statusText)
+                        .font(.system(size: 21, weight: .medium, design: .serif))
+                        .foregroundColor(vm.finished ? Color(hex: "D4AF37") : .white)
+                        .multilineTextAlignment(.center)
+                        .animation(.easeInOut, value: vm.statusText)
 
-    var centralImageView: some View {
-        VStack(spacing: 21) {
-            Image("dadi")
-                .resizable().scaledToFit().frame(width: 144, height: 144)
-                .clipShape(RoundedRectangle(cornerRadius: 34))
-                .shadow(color: .black.opacity(0.4), radius: 21, x: 0, y: 13)
+                    if vm.finished {
+                        Text("We thank you for joining us in this spiritual journey. May Dadi Maa bless you. Jai Dadi Ki.")
+                            .font(.system(size: 13))
+                            .foregroundColor(Color(hex: "D4AF37").opacity(0.7))
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 55)
+                            .transition(.opacity)
 
-            Text(vm.statusText)
-                .font(.system(size: 21, weight: .medium, design: .serif))
-                .foregroundColor(vm.finished ? Color(hex: "D4AF37") : .white)
-                .multilineTextAlignment(.center)
-        }
-    }
-
-    var controlsView: some View {
-        VStack(spacing: 34) {
-            if !vm.earphonesConfirmed && !vm.finished {
-                Button(action: { withAnimation { vm.earphonesConfirmed = true } }) {
-                    Text("Confirm Headset").font(.system(size: 16, weight: .bold))
-                        .foregroundColor(.black).frame(maxWidth: .infinity).padding(.vertical, 13)
-                        .background(Color(hex: "D4AF37")).cornerRadius(13)
-                }
-                .padding(.horizontal, 55)
-            } else if !vm.finished {
-                HStack(spacing: 55) {
-                    controlButton(icon: "airplane.departure", label: "Commence", color: Color(hex: "D4AF37"), disabled: vm.isPlaybackStartedByUser || !vm.isConfigLoaded) {
-                        vm.isPlaybackStartedByUser = true
-                        vm.schedulePlayback()
-                    }
-                    controlButton(icon: "airplane.arrival", label: "End Session", color: .red, disabled: !vm.isPlaybackStartedByUser) {
-                        vm.stopPlayback()
+                        Button(action: {
+                            withAnimation { vm.replayJourney() }
+                        }) {
+                            Text("Replay Journey")
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundColor(.black)
+                                .padding(.vertical, 13)
+                                .frame(maxWidth: .infinity)
+                                .background(Color(hex: "D4AF37"))
+                                .cornerRadius(13)
+                        }
+                        .padding(.horizontal, 55)
                     }
                 }
-                if vm.isPlaybackStartedByUser { progressView }
-            } else {
-                Button(action: { withAnimation { vm.replayJourney() } }) {
-                    Text("Replay Journey").font(.system(size: 16, weight: .bold))
-                        .foregroundColor(.black).frame(maxWidth: .infinity).padding(.vertical, 13)
-                        .background(Color(hex: "D4AF37")).cornerRadius(13)
-                }
-                .padding(.horizontal, 55)
-            }
-        }
-        .padding(.bottom, 21)
-    }
 
-    func controlButton(icon: String, label: String, color: Color, disabled: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: { withAnimation { action() } }) {
-            VStack(spacing: 8) {
-                Image(systemName: icon).font(.system(size: 34))
-                Text(label).font(.system(size: 13, weight: .bold))
+                // Volume and Sleep Timer Controls
+                if vm.isPlaybackStartedByUser && !vm.finished {
+                    VStack(spacing: 15) {
+                        // Volume Slider
+                        HStack(spacing: 15) {
+                            Image(systemName: "speaker.fill")
+                                .foregroundColor(.secondary)
+                            Slider(value: $vm.volume, in: 0...1)
+                                .accentColor(Color(hex: "D4AF37"))
+                            Image(systemName: "speaker.wave.3.fill")
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal, 40)
+
+                        // Sleep Timer
+                        HStack {
+                            Menu {
+                                Button("Off") { vm.setSleepTimer(minutes: nil) }
+                                Button("15 Minutes") { vm.setSleepTimer(minutes: 15) }
+                                Button("30 Minutes") { vm.setSleepTimer(minutes: 30) }
+                                Button("60 Minutes") { vm.setSleepTimer(minutes: 60) }
+                            } label: {
+                                HStack {
+                                    Image(systemName: "timer")
+                                    Text(vm.sleepTimerRemaining == nil ? "Sleep Timer" : "Ends in \(vm.formatSleepTimer())")
+                                }
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundColor(vm.sleepTimerRemaining == nil ? .secondary : Color(hex: "D4AF37"))
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                .background(Color.white.opacity(0.05))
+                                .cornerRadius(20)
+                            }
+                        }
+                    }
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                }
             }
-            .foregroundColor(disabled ? .gray : color)
-            .frame(width: 89, height: 89)
-            .background(Circle().fill(Color.white.opacity(0.05)))
+
+            Spacer()
+
+            // Controls Area
+            VStack(spacing: 34) {
+                if !vm.earphonesConfirmed && !vm.finished {
+                    VStack(spacing: 21) {
+                        Text("Headset Experience")
+                            .font(.system(size: 21, weight: .bold))
+                        Text("Please connect your headset to begin the journey")
+                            .font(.system(size: 13))
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+
+                        Button(action: {
+                            withAnimation { vm.earphonesConfirmed = true }
+                        }) {
+                            Text("Confirm Headset")
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundColor(.black)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 13)
+                                .background(Color(hex: "D4AF37"))
+                                .cornerRadius(13)
+                        }
+                        .padding(.horizontal, 55)
+                    }
+                    .padding(34)
+                    .background(Color.white.opacity(0.05))
+                    .cornerRadius(21)
+                    .padding(.horizontal, 21)
+
+                } else if !vm.finished {
+                    VStack(spacing: 34) {
+                        if vm.isPlaybackStartedByUser {
+                            progressView
+                        }
+
+                        HStack(spacing: 55) {
+                            Button(action: {
+                                withAnimation {
+                                    vm.isPlaybackStartedByUser = true
+                                    vm.schedulePlayback()
+                                }
+                            }) {
+                                VStack(spacing: 8) {
+                                    Image(systemName: "airplane.departure")
+                                        .font(.system(size: 34))
+                                    Text("Commence")
+                                        .font(.system(size: 13, weight: .bold))
+                                }
+                                .foregroundColor(vm.isPlaybackStartedByUser || !vm.isConfigLoaded ? .gray : Color(hex: "D4AF37"))
+                                .frame(width: 89, height: 89)
+                                .background(Circle().fill(Color.white.opacity(0.05)))
+                            }
+                            .disabled(vm.isPlaybackStartedByUser || !vm.isConfigLoaded)
+
+                            Button(action: {
+                                withAnimation { vm.stopPlayback() }
+                            }) {
+                                VStack(spacing: 8) {
+                                    Image(systemName: "airplane.arrival")
+                                        .font(.system(size: 34))
+                                    Text("End Session")
+                                        .font(.system(size: 13, weight: .bold))
+                                }
+                                .foregroundColor(!vm.isPlaybackStartedByUser ? .gray : .red)
+                                .frame(width: 89, height: 89)
+                                .background(Circle().fill(Color.white.opacity(0.05)))
+                            }
+                            .disabled(!vm.isPlaybackStartedByUser)
+                        }
+                    }
+                    .padding(.bottom, 55)
+                }
+            }
+            .padding(.bottom, 21)
         }
-        .disabled(disabled)
     }
 
     var progressView: some View {
         VStack {
-            ZStack(alignment: .leading) {
-                Rectangle().fill(Color.gray.opacity(0.3)).frame(height: 6)
-                GeometryReader { geo in
-                    Rectangle().fill(Color(hex: "D4AF37")).frame(width: geo.size.width * CGFloat(vm.progress), height: 6)
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Rectangle().fill(Color.gray.opacity(0.3))
+                        .frame(height: 6)
+                    Rectangle().fill(Color(hex: "D4AF37"))
+                        .frame(width: geo.size.width * CGFloat(vm.progress), height: 6)
                 }
+                .cornerRadius(3)
             }
-            .frame(height: 6).cornerRadius(3).padding(.horizontal)
+            .frame(height: 6)
+            .padding(.horizontal)
+
             HStack {
-                Text(vm.currentTimeStr); Spacer(); Text(vm.remainingTime)
+                Text(vm.currentTimeStr).font(.caption2).monospacedDigit()
+                Spacer()
+                Text(vm.remainingTime).font(.caption2).monospacedDigit()
             }
-            .font(.caption2).monospacedDigit().padding(.horizontal)
+            .padding(.horizontal)
         }
     }
 }
 
+// MARK: - Helpers
 extension Color {
     init(hex: String) {
         let scanner = Scanner(string: hex)
         var rgbValue: UInt64 = 0
         scanner.scanHexInt64(&rgbValue)
-        self.init(red: Double((rgbValue & 0xFF0000) >> 16) / 255.0, green: Double((rgbValue & 0x00FF00) >> 8) / 255.0, blue: Double(rgbValue & 0x0000FF) / 255.0)
+        let r = Double((rgbValue & 0xFF0000) >> 16) / 255.0
+        let g = Double((rgbValue & 0x00FF00) >> 8) / 255.0
+        let b = Double(rgbValue & 0x0000FF) / 255.0
+        self.init(red: r, green: g, blue: b)
     }
+}
+
+#Preview {
+    ContentView()
 }
