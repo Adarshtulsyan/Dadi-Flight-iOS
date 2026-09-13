@@ -194,7 +194,7 @@ class FlightViewModel: ObservableObject {
     private func updateNowPlayingInfo() {
         var nowPlayingInfo = [String: Any]()
         nowPlayingInfo[MPMediaItemPropertyTitle] = "Rani Sati Dadi Mangal Path"
-        nowPlayingInfo[MPMediaItemPropertyArtist] = "Marwari Samaj"
+        nowPlayingInfo[MPMediaItemPropertyArtist] = "Jai Dadi Naam Bank Kashi"
 
         if let player = audioPlayer, let item = player.currentItem {
             nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = player.currentTime().seconds
@@ -546,7 +546,7 @@ struct ContentView: View {
                 Text("Organized by")
                     .font(.system(size: 13))
                     .foregroundColor(.secondary)
-                Text("Marwari Samaj")
+                Text("Jai Dadi Naam Bank Kashi")
                     .font(.system(size: 21, weight: .semibold))
             }
 
@@ -562,6 +562,12 @@ struct ContentView: View {
                     .cornerRadius(13)
             }
             .padding(.horizontal, 55)
+
+            Text("Developed by Adarsh Tulsyan")
+                .font(.system(size: 11, design: .serif))
+                .foregroundColor(Color(hex: "D4AF37"))
+                .opacity(0.6)
+                .padding(.top, 10)
         }
     }
 
@@ -573,7 +579,7 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Rani Sati Dadi Mangal Path")
                         .font(.system(size: 21, weight: .bold))
-                    Text("Organised by Marwari Samaj")
+                    Text("Organised by Jai Dadi Naam Bank Kashi")
                         .font(.system(size: 13))
                         .foregroundColor(.secondary)
 
@@ -775,6 +781,12 @@ struct ContentView: View {
                 }
             }
             .padding(.bottom, 21)
+
+            Text("Developed by Adarsh Tulsyan")
+                .font(.system(size: 11, design: .serif))
+                .foregroundColor(Color(hex: "D4AF37"))
+                .opacity(0.6)
+                .padding(.bottom, 10)
         }
     }
 
